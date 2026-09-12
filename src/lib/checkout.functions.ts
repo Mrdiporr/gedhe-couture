@@ -1,0 +1,295 @@
+/**
+ * Checkout: server-authoritative pricing, order creation and hosted-payment
+ * redirects. Client-supplied amounts are never trusted.
+ */
+import { createServerFn } from "@tanstack/react-start";
+import { getRequest } from "@tanstack/react-start/server";
+import { z } from "zod";
+
+import { DELIVERY_FEE, type Currency } from "@/data/catalog";
+
+const checkoutSchema = z.object({
+  currency: z.enum(["NGN", "GBP"]),
+  provider: z.enum(["stripe", "paystack", "whatsapp"]),
+  customer: z.object({
+    name: z.string().trim().min(2).max(120),
+    phone: z.string().trim().min(7).max(30),
+    email: z.string().trim().email().max(160).or(z.literal("")),
+    city: z.string().trim().min(2).max(120),
+    address: z.string().trim().min(4).max(400),
+    notes: z.string().trim().max(600).default(""),
+  }),
+  items: z
+    .array(
+      z.object({
+        productId: z.string().uuid(),
+        option: z.string().trim().min(1).max(120),
+        qty: z.number().int().min(1).max(5000),
+      }),
+    )
+    .min(1)
+    .max(40),
+});
+
+export interface CheckoutResult {
+  reference: string;
+  total: number;
+  currency: Currency;
+  checkoutUrl: string | null;
+  items: { name: string; option: string; sku: string; qty: number; lineTotal: number }[];
+  subtotal: number;
+  delivery: number;
+  volume: number;
+}
+
+function makeReference() {
+  const stamp = Date.now().toString(36).toUpperCase();
+  const noise = Math.floor(Math.random() * 46656)
+    .toString(36)
+    .toUpperCase()
+    .padStart(3, "0");
+  return `3KB-${stamp.slice(-5)}${noise}`;
+}
+
+function skuFor(code: string, option: string) {
+  return `${code.toUpperCase()}-${option.replace(/[^a-zA-Z0-9]+/g, "").slice(0, 6).toUpperCase()}`;
+}
+
+function originFrom(): string {
+  const request = getRequest();
+  const origin = request.headers.get("origin");
+  if (origin) return origin;
+  const url = new URL(request.url);
+  return `${url.protocol}//${url.host}`;
+}
+
+export const startCheckout = createServerFn({ method: "POST" })
+  .inputValidator((data: unknown) => checkoutSchema.parse(data))
+  .handler(async ({ data }): Promise<CheckoutResult> => {
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const currency = data.currency as Currency;
+
+    if (data.provider !== "whatsapp" && data.customer.email === "") {
+      throw new Error("An email address is required for card payment.");
+    }
+    if (
+      (data.provider === "paystack" && currency !== "NGN") ||
+      (data.provider === "stripe" && currency !== "GBP")
+    ) {
+      throw new Error("Selected payment route does not match the checkout currency.");
+    }
+
+    const ids = [...new Set(data.items.map((i) => i.productId))];
+    const { data: rows, error } = await supabaseAdmin
+      .from("products")
+      .select("id, code, name, min_qty, price_ngn, price_gbp, volume_tiers, options, published")
+      .in("id", ids);
+    if (error) throw new Error("Could not price this order right now.");
+
+    const priced = data.items.map((item) => {
+      const row = rows?.find((r) => r.id === item.productId);
+      if (!row || !row.published) throw new Error("An item in your bag is no longer available.");
+      const qty = Math.max(item.qty, row.min_qty);
+      const tiers = Array.isArray(row.volume_tiers)
+        ? (row.volume_tiers as { minQty: number; unitPriceNgn: number; unitPriceGbp: number }[])
+        : [];
+      const base = currency === "NGN" ? Number(row.price_ngn) : Number(row.price_gbp);
+      const unitPrice = tiers.reduce(
+        (price, tier) =>
+          qty >= Number(tier.minQty)
+            ? Number(currency === "NGN" ? tier.unitPriceNgn : tier.unitPriceGbp)
+            : price,
+        base,
+      );
+      return {
+        name: row.name,
+        option: item.option,
+        sku: skuFor(row.code, item.option),
+        qty,
+        unitPrice,
+        lineTotal: Number((unitPrice * qty).toFixed(2)),
+      };
+    });
+
+    const subtotal = Number(priced.reduce((n, l) => n + l.lineTotal, 0).toFixed(2));
+    const delivery = DELIVERY_FEE[currency];
+    const total = Number((subtotal + delivery).toFixed(2));
+    const volume = priced.reduce((n, l) => n + l.qty, 0);
+    const reference = makeReference();
+
+    let checkoutUrl: string | null = null;
+    let providerReference: string | null = null;
+
+    if (data.provider === "stripe") {
+      const secret = process.env['STRIPE_SECRET_KEY'];
+      if (!secret) throw new Error("Card payment is not configured yet.");
+      const body = new URLSearchParams();
+      body.set("mode", "payment");
+      body.set("client_reference_id", reference);
+      body.set("metadata[reference]", reference);
+      body.set("customer_email", data.customer.email);
+      body.set("success_url", `${originFrom()}/order/${reference}`);
+      body.set("cancel_url", `${originFrom()}/?checkout=cancelled`);
+      priced.forEach((line, i) => {
+        body.set(`line_items[${i}][quantity]`, String(line.qty));
+        body.set(`line_items[${i}][price_data][currency]`, "gbp");
+        body.set(
+          `line_items[${i}][price_data][unit_amount]`,
+          String(Math.round(line.unitPrice * 100)),
+        );
+        body.set(
+          `line_items[${i}][price_data][product_data][name]`,
+          `${line.name} — ${line.option}`,
+        );
+      });
+      body.set(`line_items[${priced.length}][quantity]`, "1");
+      body.set(`line_items[${priced.length}][price_data][currency]`, "gbp");
+      body.set(
+        `line_items[${priced.length}][price_data][unit_amount]`,
+        String(Math.round(delivery * 100)),
+      );
+      body.set(
+        `line_items[${priced.length}][price_data][product_data][name]`,
+        "Delivery & handling",
+      );
+
+      const res = await fetch("https://api.stripe.com/v1/checkout/sessions", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${secret}`,
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body,
+      });
+      const payload = (await res.json()) as { id?: string; url?: string; error?: unknown };
+      if (!res.ok || !payload.url) {
+        console.error("Stripe session failed", payload.error ?? payload);
+        throw new Error("Card payment could not be started. Please try again.");
+      }
+      checkoutUrl = payload.url;
+      providerReference = payload.id ?? null;
+    }
+
+    if (data.provider === "paystack") {
+      const secret = process.env['PAYSTACK_SECRET_KEY'];
+      if (!secret) throw new Error("Card payment is not configured yet.");
+      const res = await fetch("https://api.paystack.co/transaction/initialize", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${secret}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: data.customer.email,
+          amount: Math.round(total * 100),
+          currency: "NGN",
+          reference,
+          callback_url: `${originFrom()}/order/${reference}`,
+          metadata: { reference, customer_name: data.customer.name },
+        }),
+      });
+      const payload = (await res.json()) as {
+        status?: boolean;
+        message?: string;
+        data?: { authorization_url?: string; reference?: string };
+      };
+      if (!res.ok || !payload.status || !payload.data?.authorization_url) {
+        console.error("Paystack init failed", payload.message ?? payload);
+        throw new Error("Card payment could not be started. Please try again.");
+      }
+      checkoutUrl = payload.data.authorization_url;
+      providerReference = payload.data.reference ?? reference;
+    }
+
+    const { error: insertError } = await supabaseAdmin.from("orders").insert({
+      reference,
+      customer_name: data.customer.name,
+      customer_phone: data.customer.phone,
+      customer_email: data.customer.email,
+      city: data.customer.city,
+      address: data.customer.address,
+      notes: data.customer.notes,
+      items: priced,
+      currency,
+      subtotal,
+      delivery_fee: delivery,
+      total,
+      volume,
+      payment_provider: data.provider,
+      payment_status: "pending",
+      fulfilment_status: "new",
+      provider_reference: providerReference,
+      provider_checkout_url: checkoutUrl,
+    });
+    if (insertError) {
+      console.error("Order insert failed", insertError);
+      throw new Error("Your order could not be saved. Please try again.");
+    }
+
+    return {
+      reference,
+      total,
+      currency,
+      checkoutUrl,
+      items: priced.map(({ name, option, sku, qty, lineTotal }) => ({
+        name,
+        option,
+        sku,
+        qty,
+        lineTotal,
+      })),
+      subtotal,
+      delivery,
+      volume,
+    };
+  });
+
+export interface PublicOrderStatus {
+  reference: string;
+  customer_name: string;
+  currency: Currency;
+  subtotal: number;
+  delivery_fee: number;
+  total: number;
+  volume: number;
+  payment_provider: string;
+  payment_status: string;
+  fulfilment_status: string;
+  items: { name: string; option: string; sku: string; qty: number; lineTotal: number }[];
+  city: string;
+  address: string;
+  notes: string;
+  phone: string;
+}
+
+/** Reference-scoped public lookup for the post-payment confirmation screen. */
+export const getOrderByReference = createServerFn({ method: "GET" })
+  .inputValidator((data: unknown) =>
+    z.object({ reference: z.string().trim().min(6).max(40) }).parse(data),
+  )
+  .handler(async ({ data }): Promise<PublicOrderStatus | null> => {
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const { data: row, error } = await supabaseAdmin
+      .from("orders")
+      .select(
+        "reference, customer_name, customer_phone, currency, subtotal, delivery_fee, total, volume, payment_provider, payment_status, fulfilment_status, items, city, address, notes",
+      )
+      .eq("reference", data.reference)
+      .maybeSingle();
+    if (error || !row) return null;
+
+    return {
+      reference: row.reference,
+      customer_name: row.customer_name,
+      currency: row.currency as Currency,
+      subtotal: Number(row.subtotal),
+      delivery_fee: Number(row.delivery_fee),
+      total: Number(row.total),
+      volume: row.volume,
+      payment_provider: row.payment_provider,
+      payment_status: row.payment_status,
+      fulfilment_status: row.fulfilment_status,
+      items: (row.items as CheckoutResult["items"]) ?? [],
+      city: row.city,
+      address: row.address,
+      notes: row.notes,
+      phone: row.customer_phone,
+    };
+  });
