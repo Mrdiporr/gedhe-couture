@@ -65,8 +65,9 @@ export function StoreProvider({
   products,
 }: {
   children: ReactNode;
-  products: Product[];
+  products?: Product[];
 }) {
+  const catalog = products ?? [];
   const [filter, setFilter] = useState<Filter>("All");
   const [rawLines, setRawLines] = useState<CartLine[]>([]);
   const [cartOpen, setCartOpen] = useState(false);
@@ -78,19 +79,19 @@ export function StoreProvider({
   }, []);
 
   const visibleProducts = useMemo(
-    () => (filter === "All" ? products : products.filter((p) => p.category === filter)),
-    [filter, products],
+    () => (filter === "All" ? catalog : catalog.filter((p) => p.category === filter)),
+    [filter, catalog],
   );
 
   const lines = useMemo<PricedLine[]>(
     () =>
       rawLines.flatMap((line) => {
-        const product = products.find((p) => p.id === line.productId);
+        const product = catalog.find((p) => p.id === line.productId);
         if (!product) return [];
         const unitPrice = priceIn(product, line.qty, currency);
         return [{ ...line, product, unitPrice, lineTotal: unitPrice * line.qty }];
       }),
-    [rawLines, products, currency],
+    [rawLines, catalog, currency],
   );
 
   const volume = lines.reduce((n, l) => n + l.qty, 0);
@@ -115,14 +116,14 @@ export function StoreProvider({
       setRawLines((prev) =>
         prev.flatMap((l) => {
           if (l.key !== key) return [l];
-          const product = products.find((p) => p.id === l.productId);
+      const product = catalog.find((p) => p.id === l.productId);
           const floor = product?.minQty ?? 1;
           if (qty < floor) return [];
           return [{ ...l, qty }];
         }),
       );
     },
-    [products],
+    [catalog],
   );
 
   const removeLine = useCallback(
@@ -131,7 +132,7 @@ export function StoreProvider({
   );
 
   const value: StoreValue = {
-    products,
+    products: catalog,
     filter,
     setFilter,
     visibleProducts,
