@@ -1,5 +1,6 @@
 /** Public storefront catalog reads. */
 import { createServerFn } from "@tanstack/react-start";
+import { queryOptions } from "@tanstack/react-query";
 
 import type { Product } from "@/data/catalog";
 import { PRODUCT_COLUMNS, mapProduct, type ProductRow } from "@/lib/product-mapper";
@@ -21,3 +22,9 @@ export const listPublishedProducts = createServerFn({ method: "GET" }).handler(
     return (data as unknown as ProductRow[]).map(mapProduct);
   },
 );
+
+export const publishedProductsQueryOptions = () =>
+  queryOptions({
+    queryKey: ["published-products"],
+    queryFn: () => listPublishedProducts(),
+  });

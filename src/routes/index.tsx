@@ -1,6 +1,8 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { useSuspenseQuery } from "@tanstack/react-query";
 
 import { StoreProvider } from "@/lib/store";
+import { publishedProductsQueryOptions } from "@/lib/catalog.functions";
 import { SiteHeader } from "@/components/site-header";
 import { Hero } from "@/components/hero";
 import { Catalog } from "@/components/catalog";
@@ -19,14 +21,20 @@ export const Route = createFileRoute("/")({
       { name: "description", content: DESCRIPTION },
       { property: "og:title", content: TITLE },
       { property: "og:description", content: DESCRIPTION },
+      { property: "og:type", content: "website" },
+      { name: "twitter:card", content: "summary_large_image" },
     ],
   }),
+  loader: ({ context }) =>
+    context.queryClient.ensureQueryData(publishedProductsQueryOptions()),
   component: Index,
 });
 
 function Index() {
+  const { data: products } = useSuspenseQuery(publishedProductsQueryOptions());
+
   return (
-    <StoreProvider>
+    <StoreProvider products={products}>
       <SiteHeader />
       <main>
         <Hero />
