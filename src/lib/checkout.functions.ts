@@ -261,7 +261,6 @@ export interface PublicOrderStatus {
   payment_status: string;
   fulfilment_status: string;
   items: { name: string; option: string; sku: string; qty: number; lineTotal: number }[];
-  customer_name: string;
   contact_hint: string;
 }
 
@@ -296,7 +295,6 @@ export const getOrderByLookupToken = createServerFn({ method: "GET" })
       payment_status: row.payment_status,
       fulfilment_status: row.fulfilment_status,
       items: (row.items as CheckoutResult["items"]) ?? [],
-      customer_name: row.customer_name,
       contact_hint: row.customer_phone ? `WhatsApp ending ${row.customer_phone.slice(-4)}` : "Contact details received",
     };
   });
