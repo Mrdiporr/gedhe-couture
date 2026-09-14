@@ -14,6 +14,53 @@ export type Database = {
   }
   public: {
     Tables: {
+      order_audit_events: {
+        Row: {
+          actor_user_id: string | null
+          created_at: string
+          event_type: string
+          from_value: string | null
+          id: string
+          metadata: Json
+          note: string
+          order_id: string
+          order_reference: string
+          to_value: string | null
+        }
+        Insert: {
+          actor_user_id?: string | null
+          created_at?: string
+          event_type: string
+          from_value?: string | null
+          id?: string
+          metadata?: Json
+          note?: string
+          order_id: string
+          order_reference: string
+          to_value?: string | null
+        }
+        Update: {
+          actor_user_id?: string | null
+          created_at?: string
+          event_type?: string
+          from_value?: string | null
+          id?: string
+          metadata?: Json
+          note?: string
+          order_id?: string
+          order_reference?: string
+          to_value?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "order_audit_events_order_id_fkey"
+            columns: ["order_id"]
+            isOneToOne: false
+            referencedRelation: "orders"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       orders: {
         Row: {
           address: string
@@ -28,8 +75,13 @@ export type Database = {
           fulfilment_status: string
           id: string
           items: Json
+          last_payment_error: string | null
+          lookup_expires_at: string | null
+          lookup_revoked_at: string | null
+          lookup_token_hash: string | null
           notes: string
           paid_at: string | null
+          payment_attempts: number
           payment_provider: string
           payment_status: string
           provider_checkout_url: string | null
@@ -53,8 +105,13 @@ export type Database = {
           fulfilment_status?: string
           id?: string
           items?: Json
+          last_payment_error?: string | null
+          lookup_expires_at?: string | null
+          lookup_revoked_at?: string | null
+          lookup_token_hash?: string | null
           notes?: string
           paid_at?: string | null
+          payment_attempts?: number
           payment_provider?: string
           payment_status?: string
           provider_checkout_url?: string | null
@@ -78,8 +135,13 @@ export type Database = {
           fulfilment_status?: string
           id?: string
           items?: Json
+          last_payment_error?: string | null
+          lookup_expires_at?: string | null
+          lookup_revoked_at?: string | null
+          lookup_token_hash?: string | null
           notes?: string
           paid_at?: string | null
+          payment_attempts?: number
           payment_provider?: string
           payment_status?: string
           provider_checkout_url?: string | null
@@ -96,24 +158,33 @@ export type Database = {
         Row: {
           event_id: string
           event_type: string
+          failure_reason: string | null
           id: string
           order_reference: string | null
+          payload_hash: string | null
+          processed_at: string | null
           provider: string
           received_at: string
         }
         Insert: {
           event_id: string
           event_type?: string
+          failure_reason?: string | null
           id?: string
           order_reference?: string | null
+          payload_hash?: string | null
+          processed_at?: string | null
           provider: string
           received_at?: string
         }
         Update: {
           event_id?: string
           event_type?: string
+          failure_reason?: string | null
           id?: string
           order_reference?: string | null
+          payload_hash?: string | null
+          processed_at?: string | null
           provider?: string
           received_at?: string
         }
