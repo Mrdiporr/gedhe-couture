@@ -33,6 +33,7 @@ const checkoutSchema = z.object({
 
 export interface CheckoutResult {
   reference: string;
+  lookupToken: string;
   total: number;
   currency: Currency;
   checkoutUrl: string | null;
@@ -43,12 +44,13 @@ export interface CheckoutResult {
 }
 
 function makeReference() {
-  const stamp = Date.now().toString(36).toUpperCase();
-  const noise = Math.floor(Math.random() * 46656)
-    .toString(36)
-    .toUpperCase()
-    .padStart(3, "0");
-  return `3KB-${stamp.slice(-5)}${noise}`;
+  return `3KB-${crypto.randomUUID().replaceAll("-", "").slice(0, 10).toUpperCase()}`;
+}
+
+async function hashLookupToken(token: string) {
+  const bytes = new TextEncoder().encode(token);
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 function skuFor(code: string, option: string) {
@@ -68,6 +70,9 @@ export const startCheckout = createServerFn({ method: "POST" })
   .handler(async ({ data }): Promise<CheckoutResult> => {
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
     const currency = data.currency as Currency;
+    const lookupToken = crypto.randomUUID();
+    const lookupTokenHash = await hashLookupToken(lookupToken);
+    const lookupExpiresAt = new Date(Date.now() + 1000 * 60 * 60 * 24 * 30).toISOString();
 
     if (data.provider !== "whatsapp" && data.customer.email === "") {
       throw new Error("An email address is required for card payment.");
@@ -128,7 +133,7 @@ export const startCheckout = createServerFn({ method: "POST" })
       body.set("client_reference_id", reference);
       body.set("metadata[reference]", reference);
       body.set("customer_email", data.customer.email);
-      body.set("success_url", `${originFrom()}/order/${reference}`);
+      body.set("success_url", `${originFrom()}/order/${lookupToken}`);
       body.set("cancel_url", `${originFrom()}/?checkout=cancelled`);
       priced.forEach((line, i) => {
         body.set(`line_items[${i}][quantity]`, String(line.qty));
@@ -181,7 +186,7 @@ export const startCheckout = createServerFn({ method: "POST" })
           amount: Math.round(total * 100),
           currency: "NGN",
           reference,
-          callback_url: `${originFrom()}/order/${reference}`,
+          callback_url: `${originFrom()}/order/${lookupToken}`,
           metadata: { reference, customer_name: data.customer.name },
         }),
       });
@@ -217,6 +222,8 @@ export const startCheckout = createServerFn({ method: "POST" })
       fulfilment_status: "new",
       provider_reference: providerReference,
       provider_checkout_url: checkoutUrl,
+      lookup_token_hash: lookupTokenHash,
+      lookup_expires_at: lookupExpiresAt,
     });
     if (insertError) {
       console.error("Order insert failed", insertError);
@@ -225,6 +232,7 @@ export const startCheckout = createServerFn({ method: "POST" })
 
     return {
       reference,
+      lookupToken,
       total,
       currency,
       checkoutUrl,
@@ -253,25 +261,26 @@ export interface PublicOrderStatus {
   payment_status: string;
   fulfilment_status: string;
   items: { name: string; option: string; sku: string; qty: number; lineTotal: number }[];
-  city: string;
-  address: string;
-  notes: string;
-  phone: string;
+  customer_name: string;
+  contact_hint: string;
 }
 
-/** Reference-scoped public lookup for the post-payment confirmation screen. */
-export const getOrderByReference = createServerFn({ method: "GET" })
+/** Opaque-token lookup for the post-payment confirmation screen. */
+export const getOrderByLookupToken = createServerFn({ method: "GET" })
   .inputValidator((data: unknown) =>
-    z.object({ reference: z.string().trim().min(6).max(40) }).parse(data),
+    z.object({ token: z.string().trim().uuid() }).parse(data),
   )
   .handler(async ({ data }): Promise<PublicOrderStatus | null> => {
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const lookupTokenHash = await hashLookupToken(data.token);
     const { data: row, error } = await supabaseAdmin
       .from("orders")
       .select(
-        "reference, customer_name, customer_phone, currency, subtotal, delivery_fee, total, volume, payment_provider, payment_status, fulfilment_status, items, city, address, notes",
+        "reference, customer_name, customer_phone, currency, subtotal, delivery_fee, total, volume, payment_provider, payment_status, fulfilment_status, items, lookup_expires_at, lookup_revoked_at",
       )
-      .eq("reference", data.reference)
+      .eq("lookup_token_hash", lookupTokenHash)
+      .gt("lookup_expires_at", new Date().toISOString())
+      .is("lookup_revoked_at", null)
       .maybeSingle();
     if (error || !row) return null;
 
@@ -287,9 +296,10 @@ export const getOrderByReference = createServerFn({ method: "GET" })
       payment_status: row.payment_status,
       fulfilment_status: row.fulfilment_status,
       items: (row.items as CheckoutResult["items"]) ?? [],
-      city: row.city,
-      address: row.address,
-      notes: row.notes,
-      phone: row.customer_phone,
+      customer_name: row.customer_name,
+      contact_hint: row.customer_phone ? `WhatsApp ending ${row.customer_phone.slice(-4)}` : "Contact details received",
     };
   });
+
+/** Kept as a compatibility alias for internal callers; it no longer accepts display references. */
+export const getOrderByReference = getOrderByLookupToken;
