@@ -1,0 +1,28 @@
+import { createFileRoute, Link } from "@tanstack/react-router";
+import { AlertCircle, ArrowLeft, CheckCircle2, Clock3, MessageCircle, PackageCheck } from "lucide-react";
+
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import { getOrderByLookupToken, type PublicOrderStatus } from "@/lib/checkout.functions";
+import { BRAND, formatMoney } from "@/data/catalog";
+
+export const Route = createFileRoute("/order/$token")({
+  loader: ({ params }) => getOrderByLookupToken({ data: { token: params.token } }),
+  head: () => ({ meta: [
+    { title: "Order status — 3kbelowankara" },
+    { name: "description", content: "Secure payment and fulfilment status for your 3kbelowankara order." },
+    { property: "og:title", content: "Order status — 3kbelowankara" },
+    { property: "og:description", content: "Secure payment and fulfilment status for your 3kbelowankara order." },
+    { property: "og:type", content: "website" },
+    { name: "twitter:card", content: "summary" },
+  ] }),
+  errorComponent: () => <StatusShell><UnknownOrder /></StatusShell>,
+  component: OrderStatusPage,
+});
+
+function StatusShell({ children }: { children: React.ReactNode }) { return <main className="min-h-screen bg-secondary/40 px-5 py-10 sm:px-8"><div className="mx-auto max-w-3xl"><Link to="/" className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground"><ArrowLeft className="h-4 w-4" /> Back to storefront</Link>{children}</div></main>; }
+function UnknownOrder() { return <div className="mt-12 border border-border bg-background p-8 text-center sm:p-12"><AlertCircle className="mx-auto h-10 w-10 text-muted-foreground" /><h1 className="mt-5 font-display text-3xl">Order not available</h1><p className="mx-auto mt-3 max-w-md text-sm leading-6 text-muted-foreground">This payment token is invalid, expired, or not ready yet. Please return to checkout and use the complete token.</p><Button asChild className="mt-6"><Link to="/order-return">Try another token</Link></Button></div>; }
+
+function OrderStatusPage() { const order = Route.useLoaderData(); return <StatusShell>{order ? <OrderStatus order={order} /> : <UnknownOrder />}</StatusShell>; }
+function OrderStatus({ order }: { order: PublicOrderStatus }) { const paid = order.payment_status === "paid"; const failed = ["failed", "cancelled"].includes(order.payment_status); return <><div className="mt-10 flex flex-wrap items-start justify-between gap-5"><div><p className="text-eyebrow text-gold">Order confirmation</p><h1 className="mt-2 font-display text-4xl tracking-tight">{order.reference}</h1><p className="mt-2 text-sm text-muted-foreground">Welcome, {order.customer_name}. {order.contact_hint}.</p></div><Badge variant={paid ? "default" : failed ? "destructive" : "secondary"}>{order.payment_status}</Badge></div><Card className="mt-8 overflow-hidden"><CardContent className="p-0"><div className={`flex gap-4 p-6 ${paid ? "bg-success/10" : failed ? "bg-destructive/10" : "bg-secondary"}`}>{paid ? <CheckCircle2 className="mt-0.5 h-6 w-6 text-success" /> : failed ? <AlertCircle className="mt-0.5 h-6 w-6 text-destructive" /> : <Clock3 className="mt-0.5 h-6 w-6 text-gold" />}<div><p className="font-semibold">{paid ? "Payment confirmed" : failed ? "Payment needs attention" : "Payment is being confirmed"}</p><p className="mt-1 text-sm leading-6 text-muted-foreground">{paid ? "Your order is now eligible for fulfilment. We will keep you updated as it moves through the atelier." : failed ? "The provider did not confirm this payment. You can contact the atelier for help or retry from the payment provider." : "Confirmation is authoritative only after the payment provider callback reaches us. This page will update when that happens."}</p></div></div><div className="grid gap-6 p-6 sm:grid-cols-2"><div><p className="text-eyebrow text-muted-foreground">Fulfilment</p><p className="mt-2 flex items-center gap-2 font-semibold capitalize"><PackageCheck className="h-4 w-4 text-gold" /> {order.fulfilment_status}</p></div><div><p className="text-eyebrow text-muted-foreground">Payment route</p><p className="mt-2 font-semibold capitalize">{order.payment_provider}</p></div></div></CardContent></Card><Card className="mt-4"><CardContent className="p-6"><p className="text-eyebrow text-muted-foreground">Your items</p><div className="mt-4 space-y-3">{order.items.map((item) => <div key={`${item.sku}-${item.option}`} className="flex justify-between gap-4 border-b border-border pb-3 text-sm"><span><span className="font-semibold">{item.qty} × {item.name}</span><span className="mt-1 block text-xs text-muted-foreground">{item.option} · {item.sku}</span></span><span className="shrink-0 tabular-nums">{formatMoney(item.lineTotal, order.currency)}</span></div>)}</div><dl className="mt-5 space-y-2 text-sm"><div className="flex justify-between text-muted-foreground"><dt>Subtotal</dt><dd>{formatMoney(order.subtotal, order.currency)}</dd></div><div className="flex justify-between text-muted-foreground"><dt>Dispatch</dt><dd>{formatMoney(order.delivery_fee, order.currency)}</dd></div><div className="flex justify-between pt-2 font-display text-2xl"><dt>Total</dt><dd>{formatMoney(order.total, order.currency)}</dd></div></dl></CardContent></Card><div className="mt-6 flex flex-wrap gap-3"><Button asChild><a href={`https://wa.me/${BRAND.whatsapp}`} target="_blank" rel="noreferrer noopener"><MessageCircle /> Contact atelier</a></Button><Button variant="outline" asChild><Link to="/">Continue shopping</Link></Button></div></>; }
