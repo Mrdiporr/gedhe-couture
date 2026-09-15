@@ -4,6 +4,7 @@
  * Totals shown here are recomputed server-side before any payment is created.
  */
 import { useEffect, useState } from "react";
+import { Link } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import {
   ArrowLeft,
@@ -324,6 +325,13 @@ export function CartPanel() {
               >
                 Continue shopping
               </button>
+              <Link
+                to="/order-return"
+                search={{ token: placed.lookupToken } as never}
+                className="mt-3 block text-center text-[11px] font-bold uppercase tracking-[0.18em] text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
+              >
+                Check payment status with your token
+              </Link>
               <p className="mt-3 flex items-center justify-center gap-1.5 text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
                 <Lock className="h-3 w-3" /> Details stored securely · Never resold
               </p>
